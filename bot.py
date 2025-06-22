@@ -2,7 +2,8 @@ import os
 import logging
 from flask import Flask, request
 from telegram import Update, Bot, InlineKeyboardButton, InlineKeyboardMarkup
-from telegram.ext import Updater, CommandHandler, MessageHandler, Filters, CallbackContext, CallbackQueryHandler
+# Note the change here: Updater is not used for webhook-based bots in newer versions
+from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes, CallbackQueryHandler
 from functools import wraps
 
 # Import the database service
@@ -19,36 +20,41 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# --- FLASK APP FOR HEROKU ---
+# --- FLASK APP FOR HEROKU (for webhook receiving) ---
 app = Flask(__name__)
+
+# --- TELEGRAM BOT APPLICATION SETUP ---
+# In v20+, we build the application first
+application = Application.builder().token(BOT_TOKEN).build()
+
 
 # --- ADMIN DECORATOR ---
 # A decorator to restrict access to admin-only commands
 def admin_only(func):
     @wraps(func)
-    def wrapped(update: Update, context: CallbackContext, *args, **kwargs):
+    async def wrapped(update: Update, context: ContextTypes.DEFAULT_TYPE, *args, **kwargs):
         user_id = update.effective_user.id
         if user_id != ADMIN_USER_ID:
-            update.message.reply_text("Sorry, this is an admin-only command.")
+            await update.message.reply_text("Sorry, this is an admin-only command.")
             return
-        return func(update, context, *args, **kwargs)
+        return await func(update, context, *args, **kwargs)
     return wrapped
 
 # --- USER COMMANDS ---
 
-def start(update: Update, context: CallbackContext) -> None:
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Handles the /start command."""
     welcome_text = (
         "Welcome to the Mobile Parts Compatibility Bot!\n\n"
         "To get started, just send me a phone model name (e.g., 'Vivo Y20').\n\n"
         "If you are the admin, use /admin to manage the database."
     )
-    update.message.reply_text(welcome_text)
+    await update.message.reply_text(welcome_text)
 
 # --- ADMIN COMMANDS ---
 
 @admin_only
-def admin_panel(update: Update, context: CallbackContext) -> None:
+async def admin_panel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Displays the main admin panel."""
     keyboard = [
         [InlineKeyboardButton("➕ Add/Update Part Compatibility", callback_data='admin_add_part')],
@@ -56,25 +62,24 @@ def admin_panel(update: Update, context: CallbackContext) -> None:
         [InlineKeyboardButton("❌ Delete a Phone Model", callback_data='admin_delete_start')],
     ]
     reply_markup = InlineKeyboardMarkup(keyboard)
-    update.message.reply_text("Welcome, Admin! What would you like to do?", reply_markup=reply_markup)
+    await update.message.reply_text("Welcome, Admin! What would you like to do?", reply_markup=reply_markup)
 
 # --- MESSAGE HANDLERS & CONVERSATION LOGIC ---
 
-def handle_message(update: Update, context: CallbackContext) -> None:
+async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Handles all text messages to search for phones or process admin input."""
     user_state = context.user_data.get('state')
 
     if user_state == 'awaiting_model_for_add':
-        process_add_model_name(update, context)
+        await process_add_model_name(update, context)
     elif user_state == 'awaiting_compat_list':
-        process_compat_list(update, context)
+        await process_compat_list(update, context)
     elif user_state == 'awaiting_model_for_delete':
-        process_delete_model_name(update, context)
+        await process_delete_model_name(update, context)
     else:
-        # Default behavior: search for a phone model
-        search_phone_model(update, context)
+        await search_phone_model(update, context)
 
-def search_phone_model(update: Update, context: CallbackContext) -> None:
+async def search_phone_model(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Searches for a phone model in the database."""
     model_name = update.message.text.strip()
     phone = database.find_phone(model_name)
@@ -86,39 +91,39 @@ def search_phone_model(update: Update, context: CallbackContext) -> None:
             [InlineKeyboardButton("🛡️ Find Compatible Screen Guard", callback_data='find_glass')],
         ]
         reply_markup = InlineKeyboardMarkup(keyboard)
-        update.message.reply_text(f"I found `{phone['_id']}`. Which part are you looking for?", reply_markup=reply_markup, parse_mode='MarkdownV2')
+        await update.message.reply_text(f"I found `{phone['_id']}`. Which part are you looking for?", reply_markup=reply_markup, parse_mode='MarkdownV2')
     else:
-        update.message.reply_text(f"Sorry, I couldn't find '{model_name}' in my database.")
+        await update.message.reply_text(f"Sorry, I couldn't find '{model_name}' in my database.")
 
 # --- CALLBACK QUERY (BUTTON PRESS) HANDLER ---
 
-def button_handler(update: Update, context: CallbackContext) -> None:
+async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Handles all button presses from inline keyboards."""
     query = update.callback_query
-    query.answer() # Acknowledge the button press
+    await query.answer()
 
     # Route admin callbacks
     if query.data == 'admin_add_part':
-        ask_for_model_to_add(query, context)
+        await ask_for_model_to_add(query, context)
     elif query.data == 'admin_list_all':
-        list_all_models(query, context)
+        await list_all_models(query, context)
     elif query.data == 'admin_delete_start':
-        ask_for_model_to_delete(query, context)
-    elif query.data.startswith('link_'): # e.g., link_display or link_glass
+        await ask_for_model_to_delete(query, context)
+    elif query.data.startswith('link_'):
         part_type = query.data.split('_')[1]
-        ask_for_compat_list(query, context, part_type)
+        await ask_for_compat_list(query, context, part_type)
     
     # Route user callbacks
     elif query.data == 'find_display' or query.data == 'find_glass':
-        find_compatible_parts(query, context)
+        await find_compatible_parts(query, context)
 
-def find_compatible_parts(query: Update, context: CallbackContext):
+async def find_compatible_parts(query: Update, context: ContextTypes.DEFAULT_TYPE):
     """Finds and displays compatible parts for a searched phone."""
     phone_id = context.user_data.get('searched_phone_id')
     part_type = 'display' if query.data == 'find_display' else 'glass'
 
     if not phone_id:
-        query.edit_message_text("Error: I've lost track of which phone you searched for. Please search again.")
+        await query.edit_message_text("Error: I've lost track of which phone you searched for. Please search again.")
         return
 
     compatible_models = database.get_compatible_models(phone_id, part_type)
@@ -130,37 +135,37 @@ def find_compatible_parts(query: Update, context: CallbackContext):
     else:
         message = f"Sorry, I don't have compatibility information for the `{part_type}` of `{phone_id}` yet."
 
-    query.edit_message_text(message, parse_mode='MarkdownV2')
+    await query.edit_message_text(message, parse_mode='MarkdownV2')
 
 
 # --- ADMIN WORKFLOW FUNCTIONS ---
 
-def ask_for_model_to_add(query: Update, context: CallbackContext):
+async def ask_for_model_to_add(query: Update, context: ContextTypes.DEFAULT_TYPE):
     """Asks admin for the model name to add/update."""
     context.user_data['state'] = 'awaiting_model_for_add'
-    query.edit_message_text("Please send me the full model name you want to add or update (e.g., `Oppo F21 Pro`).")
+    await query.edit_message_text("Please send me the full model name you want to add or update (e.g., `Oppo F21 Pro`).")
 
-def process_add_model_name(update: Update, context: CallbackContext):
+async def process_add_model_name(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Processes the model name sent by the admin."""
     model_name = update.message.text.strip()
     context.user_data['new_model_name'] = model_name
-    context.user_data['state'] = None # Clear state
+    context.user_data['state'] = None
 
     keyboard = [
         [InlineKeyboardButton("📱 Link Display", callback_data='link_display')],
         [InlineKeyboardButton("🛡️ Link Screen Guard", callback_data='link_glass')],
     ]
     reply_markup = InlineKeyboardMarkup(keyboard)
-    update.message.reply_text(f"Okay, I've registered `{model_name}`. Which part do you want to link?", reply_markup=reply_markup, parse_mode='MarkdownV2')
+    await update.message.reply_text(f"Okay, I've registered `{model_name}`. Which part do you want to link?", reply_markup=reply_markup, parse_mode='MarkdownV2')
 
-def ask_for_compat_list(query: Update, context: CallbackContext, part_type: str):
+async def ask_for_compat_list(query: Update, context: ContextTypes.DEFAULT_TYPE, part_type: str):
     """Asks for the list of other compatible models."""
     context.user_data['state'] = 'awaiting_compat_list'
     context.user_data['part_type'] = part_type
     part_name = "Display" if part_type == 'display' else "Screen Guard"
-    query.edit_message_text(f"Please send a comma-separated list of all other models that share the same *{part_name}*.\n\n(e.g., `Model A, Model B, Model C`)")
+    await query.edit_message_text(f"Please send a comma-separated list of all other models that share the same *{part_name}*.\n\n(e.g., `Model A, Model B, Model C`)")
 
-def process_compat_list(update: Update, context: CallbackContext):
+async def process_compat_list(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Processes the comma-separated list and updates the database."""
     try:
         main_model = context.user_data['new_model_name']
@@ -173,21 +178,21 @@ def process_compat_list(update: Update, context: CallbackContext):
         
         database.link_parts(all_models, part_type)
 
-        update.message.reply_text(f"✅ Success! Compatibility for the `{part_type}` has been set for:\n\n" + "• " + "\n• ".join(all_models))
+        await update.message.reply_text(f"✅ Success! Compatibility for the `{part_type}` has been set for:\n\n" + "• " + "\n• ".join(all_models))
 
     except Exception as e:
         logger.error(f"Error processing compatibility list: {e}")
-        update.message.reply_text("An error occurred. Please try again.")
+        await update.message.reply_text("An error occurred. Please try again.")
     finally:
         for key in ['state', 'new_model_name', 'part_type']:
             if key in context.user_data:
                 del context.user_data[key]
 
-def list_all_models(query: Update, context: CallbackContext):
+async def list_all_models(query: Update, context: ContextTypes.DEFAULT_TYPE):
     """Fetches and lists all unique models from the database."""
     all_phones = database.get_all_phones()
     if not all_phones:
-        query.edit_message_text("The database is currently empty.")
+        await query.edit_message_text("The database is currently empty.")
         return
     
     message = "*All models in the database:*\n\n"
@@ -196,14 +201,14 @@ def list_all_models(query: Update, context: CallbackContext):
     if len(message) > 4096:
         message = message[:4090] + "\n..."
     
-    query.edit_message_text(message, parse_mode='MarkdownV2')
+    await query.edit_message_text(message, parse_mode='MarkdownV2')
     
-def ask_for_model_to_delete(query: Update, context: CallbackContext):
+async def ask_for_model_to_delete(query: Update, context: ContextTypes.DEFAULT_TYPE):
     """Asks admin for the model name to delete."""
     context.user_data['state'] = 'awaiting_model_for_delete'
-    query.edit_message_text("Please send me the exact model name you want to delete from the database.")
+    await query.edit_message_text("Please send me the exact model name you want to delete from the database.")
     
-def process_delete_model_name(update: Update, context: CallbackContext):
+async def process_delete_model_name(update: Update, context: ContextTypes.DEFAULT_T):
     """Deletes a model from the database."""
     model_name = update.message.text.strip()
     context.user_data['state'] = None
@@ -211,34 +216,61 @@ def process_delete_model_name(update: Update, context: CallbackContext):
     try:
         success = database.delete_phone(model_name)
         if success:
-            update.message.reply_text(f"✅ Successfully deleted `{model_name}` from the database.", parse_mode='MarkdownV2')
+            await update.message.reply_text(f"✅ Successfully deleted `{model_name}` from the database.", parse_mode='MarkdownV2')
         else:
-            update.message.reply_text(f"Could not find `{model_name}` to delete.", parse_mode='MarkdownV2')
+            await update.message.reply_text(f"Could not find `{model_name}` to delete.", parse_mode='MarkdownV2')
     except Exception as e:
         logger.error(f"Error deleting model: {e}")
-        update.message.reply_text("An error occurred during deletion.")
+        await update.message.reply_text("An error occurred during deletion.")
 
 
-# --- MAIN SETUP ---
+# --- MAIN SETUP AND WEBHOOK LOGIC ---
+# Define handlers
+start_handler = CommandHandler('start', start)
+admin_handler = CommandHandler('admin', admin_panel)
+message_handler = MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message)
+callback_handler = CallbackQueryHandler(button_handler)
+
+# Add handlers to the application
+application.add_handler(start_handler)
+application.add_handler(admin_handler)
+application.add_handler(message_handler)
+application.add_handler(callback_handler)
+
+
+# Flask route to receive webhooks from Telegram
 @app.route(f'/{BOT_TOKEN}', methods=['POST'])
-def respond():
+async def respond():
     """Endpoint for Telegram webhook."""
-    update = Update.de_json(request.get_json(force=True), bot)
-    dispatcher.process_update(update)
+    update = Update.de_json(request.get_json(force=True), application.bot)
+    await application.process_update(update)
     return "ok"
 
-if __name__ == '__main__':
-    bot = Bot(BOT_TOKEN)
-    updater = Updater(bot.token, use_context=True)
-    dispatcher = updater.dispatcher
-
-    dispatcher.add_handler(CommandHandler("start", start))
-    dispatcher.add_handler(CommandHandler("admin", admin_panel))
-    dispatcher.add_handler(MessageHandler(Filters.text & ~Filters.command, handle_message))
-    dispatcher.add_handler(CallbackQueryHandler(button_handler))
-
+# Flask route to set the webhook
+@app.route('/setWebhook', methods=['GET', 'POST'])
+def set_webhook():
     webhook_url = f"https://{HEROKU_APP_NAME}.herokuapp.com/{BOT_TOKEN}"
-    bot.set_webhook(webhook_url)
+    # This function must be awaited
+    import asyncio
+    async def setup():
+        await application.bot.set_webhook(url=webhook_url)
+    
+    asyncio.run(setup())
+    return f"Webhook set to {webhook_url}"
+
+
+# This part is optional but useful for local testing
+if __name__ == '__main__':
+    # This sets the webhook when the script starts.
+    # In a production Heroku environment, you might want to run this once manually.
+    webhook_url = f"https://{HEROKU_APP_NAME}.herokuapp.com/{BOT_TOKEN}"
+    # This must be awaited
+    import asyncio
+    async def setup():
+        await application.bot.set_webhook(url=webhook_url)
+    
+    asyncio.run(setup())
     
     port = int(os.environ.get("PORT", 5000))
     app.run(host="0.0.0.0", port=port)
+
