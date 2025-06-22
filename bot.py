@@ -208,7 +208,7 @@ async def ask_for_model_to_delete(query: Update, context: ContextTypes.DEFAULT_T
     context.user_data['state'] = 'awaiting_model_for_delete'
     await query.edit_message_text("Please send me the exact model name you want to delete from the database.")
     
-async def process_delete_model_name(update: Update, context: ContextTypes.DEFAULT_T):
+async def process_delete_model_name(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Deletes a model from the database."""
     model_name = update.message.text.strip()
     context.user_data['state'] = None
@@ -246,31 +246,21 @@ async def respond():
     await application.process_update(update)
     return "ok"
 
-# Flask route to set the webhook
-@app.route('/setWebhook', methods=['GET', 'POST'])
-def set_webhook():
+# This function will be run by Heroku to set the webhook once
+async def setup_webhook():
     webhook_url = f"https://{HEROKU_APP_NAME}.herokuapp.com/{BOT_TOKEN}"
-    # This function must be awaited
-    import asyncio
-    async def setup():
-        await application.bot.set_webhook(url=webhook_url)
-    
-    asyncio.run(setup())
-    return f"Webhook set to {webhook_url}"
+    await application.bot.set_webhook(url=webhook_url)
+    logger.info(f"Webhook set to {webhook_url}")
 
-
-# This part is optional but useful for local testing
+# This part runs when the application starts
 if __name__ == '__main__':
-    # This sets the webhook when the script starts.
-    # In a production Heroku environment, you might want to run this once manually.
-    webhook_url = f"https://{HEROKU_APP_NAME}.herokuapp.com/{BOT_TOKEN}"
-    # This must be awaited
     import asyncio
-    async def setup():
-        await application.bot.set_webhook(url=webhook_url)
     
-    asyncio.run(setup())
+    # Run the async function to set the webhook
+    asyncio.run(setup_webhook())
     
     port = int(os.environ.get("PORT", 5000))
+    # Note: We run the Flask app directly. The bot logic is handled via the webhook endpoint.
     app.run(host="0.0.0.0", port=port)
 
+Please update your bot.py file with this corrected version and push it to Heroku. We're very close now!
