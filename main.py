@@ -1,7 +1,5 @@
 import os
 import logging
-import asyncio
-from flask import Flask, request
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes, CallbackQueryHandler
 from functools import wraps
@@ -10,13 +8,11 @@ from functools import wraps
 import database
 
 # --- CONFIGURATION ---
-# This will stop the bot immediately if an essential variable is missing.
 try:
     BOT_TOKEN = os.environ["BOT_TOKEN"]
     HEROKU_APP_NAME = os.environ["HEROKU_APP_NAME"]
     ADMIN_USER_ID = int(os.environ["ADMIN_USER_ID"])
 except KeyError as e:
-    # Use logging to see this error in Heroku logs
     logging.critical(f"Missing essential environment variable: {e}")
     raise RuntimeError(f"Missing essential environment variable: {e}")
 
@@ -26,8 +22,7 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# --- FLASK APP & TELEGRAM BOT SETUP ---
-app = Flask(__name__)
+# --- TELEGRAM BOT APPLICATION SETUP ---
 application = Application.builder().token(BOT_TOKEN).build()
 
 
@@ -45,7 +40,7 @@ def admin_only(func):
         return await func(update, context, *args, **kwargs)
     return wrapped
 
-# --- COMMAND & MESSAGE HANDLERS (Async functions) ---
+# --- COMMAND & MESSAGE HANDLERS (No changes needed here) ---
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     await update.message.reply_text(
@@ -106,7 +101,7 @@ async def find_compatible_parts(query: Update, context: ContextTypes.DEFAULT_TYP
     safe_phone_id = str(phone_id).replace('-', r'\-')
     if compatible_models:
         header = f"The *{part_name}* for `{safe_phone_id}` is also compatible with:\n"
-        model__list = "\n".join([f"• `{str(model).replace('-', r'-')}`" for model in compatible_models])
+        model_list = "\n".join([f"• `{str(model).replace('-', r'-')}`" for model in compatible_models])
         message = header + model_list
     else:
         message = f"Sorry, I don't have compatibility information for the `{part_type}` of `{safe_phone_id}` yet."
@@ -170,31 +165,28 @@ async def process_delete_model_name(update: Update, context: ContextTypes.DEFAUL
         logger.error(f"Error deleting model: {e}")
         await update.message.reply_text("An error occurred during deletion.")
 
-# --- ADD HANDLERS TO APPLICATION ---
-application.add_handler(CommandHandler('start', start))
-application.add_handler(CommandHandler('admin', admin_panel))
-application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
-application.add_handler(CallbackQueryHandler(button_handler))
 
-# --- FLASK WEBHOOK ROUTES ---
+# --- MAIN EXECUTION BLOCK ---
+if __name__ == "__main__":
+    # Add all handlers to the application
+    application.add_handler(CommandHandler('start', start))
+    application.add_handler(CommandHandler('admin', admin_panel))
+    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
+    application.add_handler(CallbackQueryHandler(button_handler))
 
-@app.route(f'/{BOT_TOKEN}', methods=['POST'])
-async def respond():
-    update = Update.de_json(await request.get_json(force=True), application.bot)
-    await application.process_update(update)
-    return "ok"
-
-@app.route('/set_webhook', methods=['GET'])
-async def set_webhook_route():
+    # Heroku provides the port to listen on via the 'PORT' environment variable
+    PORT = int(os.environ.get('PORT', '8443'))
+    
+    # The webhook URL is where Telegram will send updates
     webhook_url = f"https://{HEROKU_APP_NAME}.herokuapp.com/{BOT_TOKEN}"
-    await application.bot.set_webhook(url=webhook_url)
-    return f"Webhook set successfully to {webhook_url}", 200
 
-@app.route('/')
-def index():
-    return "Hello, I am the bot's web server!", 200
-
-if __name__ == '__main__':
-    port = int(os.environ.get("PORT", 5000))
-    app.run(host="0.0.0.0", port=port)
+    # This command starts a web server, sets the webhook, and handles updates.
+    # It's the all-in-one solution from the library for this kind of deployment.
+    logger.info(f"Starting webhook bot on port {PORT}")
+    application.run_webhook(
+        listen="0.0.0.0",
+        port=PORT,
+        url_path=BOT_TOKEN,
+        webhook_url=webhook_url
+    )
 
