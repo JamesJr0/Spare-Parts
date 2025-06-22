@@ -1,0 +1,13 @@
+# Python
+_pycache
+*.pylcod]
+*$py.class
+# Environment
+.env
+venv/
+env/
+# IDEs
+.VScode/
+.idea/
+# Instance Folder
+instance/
