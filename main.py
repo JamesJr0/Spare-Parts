@@ -1,8 +1,10 @@
 import os
 import logging
+import asyncio
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes, CallbackQueryHandler
 from functools import wraps
+from aiohttp import web
 
 # Import the database service
 import database
@@ -12,6 +14,7 @@ try:
     BOT_TOKEN = os.environ["BOT_TOKEN"]
     HEROKU_APP_NAME = os.environ["HEROKU_APP_NAME"]
     ADMIN_USER_ID = int(os.environ["ADMIN_USER_ID"])
+    PORT = int(os.environ.get("PORT", 8443))
 except KeyError as e:
     logging.critical(f"Missing essential environment variable: {e}")
     raise RuntimeError(f"Missing essential environment variable: {e}")
@@ -24,7 +27,6 @@ logger = logging.getLogger(__name__)
 
 # --- TELEGRAM BOT APPLICATION SETUP ---
 application = Application.builder().token(BOT_TOKEN).build()
-
 
 # --- ADMIN DECORATOR ---
 def admin_only(func):
@@ -40,7 +42,7 @@ def admin_only(func):
         return await func(update, context, *args, **kwargs)
     return wrapped
 
-# --- COMMAND & MESSAGE HANDLERS (No changes needed here) ---
+# --- COMMAND & MESSAGE HANDLERS (These are all correct) ---
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     await update.message.reply_text(
@@ -167,26 +169,57 @@ async def process_delete_model_name(update: Update, context: ContextTypes.DEFAUL
 
 
 # --- MAIN EXECUTION BLOCK ---
-if __name__ == "__main__":
+async def main():
     # Add all handlers to the application
     application.add_handler(CommandHandler('start', start))
     application.add_handler(CommandHandler('admin', admin_panel))
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
     application.add_handler(CallbackQueryHandler(button_handler))
 
-    # Heroku provides the port to listen on via the 'PORT' environment variable
-    PORT = int(os.environ.get('PORT', '8443'))
+    # This is the new part: using aiohttp to build our own web server
     
-    # The webhook URL is where Telegram will send updates
+    # Set the webhook
     webhook_url = f"https://{HEROKU_APP_NAME}.herokuapp.com/{BOT_TOKEN}"
+    await application.bot.set_webhook(url=webhook_url, allowed_updates=Update.ALL_TYPES)
 
-    # This command starts a web server, sets the webhook, and handles updates.
-    # It's the all-in-one solution from the library for this kind of deployment.
-    logger.info(f"Starting webhook bot on port {PORT}")
-    application.run_webhook(
-        listen="0.0.0.0",
-        port=PORT,
-        url_path=BOT_TOKEN,
-        webhook_url=webhook_url
-    )
+    # This is the function that will handle incoming requests from Telegram
+    async def telegram_handle(request):
+        """Handle incoming Telegram updates by putting them into the `update_queue`"""
+        try:
+            data = await request.json()
+            update = Update.de_json(data, application.bot)
+            await application.process_update(update)
+            return web.Response()
+        except Exception as e:
+            logger.error(f"Error in webhook handler: {e}")
+            return web.Response(status=500)
+
+    # A simple health check route
+    async def health_check(request):
+        return web.Response(text="Bot is running!")
+
+    # Set up the web server application
+    web_app = web.Application()
+    web_app.add_routes([
+        web.post(f'/{BOT_TOKEN}', telegram_handle),
+        web.get('/health', health_check),
+    ])
+
+    # Run the web server
+    logger.info(f"Starting web server on port {PORT}")
+    runner = web.AppRunner(web_app)
+    await runner.setup()
+    site = web.TCPSite(runner, '0.0.0.0', PORT)
+    await site.start()
+    
+    # Keep the application running
+    while True:
+        await asyncio.sleep(3600)  # Sleep for 1 hour
+
+if __name__ == "__main__":
+    try:
+        asyncio.run(main())
+    except (KeyboardInterrupt, SystemExit):
+        logger.info("Bot stopped.")
+
 
