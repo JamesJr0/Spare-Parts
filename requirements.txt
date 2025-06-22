@@ -1,4 +1,3 @@
-The [webhooks] extra includes everything needed for the built-in server
-python-telegram-bot[webhooks]==21.1.1
-MongoDB driver
+python-telegram-bot==21.1.1
 pymongo[srv]==4.8.0
+httpx==0.27.0
