@@ -1,0 +1,7 @@
+# For the Telegram bot framework
+python-telegram-bot
+# For the web server part required by Heroku
+Flask
+# For MongoDB Atlas database connection
+# The [srv] extra is needed for mongodb+srv:// URIs
+pymongo[srv]
