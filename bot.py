@@ -262,5 +262,3 @@ if __name__ == '__main__':
     port = int(os.environ.get("PORT", 5000))
     # Note: We run the Flask app directly. The bot logic is handled via the webhook endpoint.
     app.run(host="0.0.0.0", port=port)
-
-Please update your bot.py file with this corrected version and push it to Heroku. We're very close now!
